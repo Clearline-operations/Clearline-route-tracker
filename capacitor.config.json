@@ -1,0 +1,11 @@
+{
+  "appId": "com.clearlineoperations.tracker",
+  "appName": "ClearLine Operations",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "BackgroundGeolocation": {}
+  }
+}
