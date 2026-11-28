@@ -62,13 +62,13 @@
     h2 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
     p.desc { font-size: 12.5px; color: var(--muted); line-height: 1.45; margin-bottom: 14px; }
     label { display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 5px; }
-    input, select {
+    input[type="text"], select {
       width: 100%; background: var(--input-bg); border: 1px solid #334155; color: var(--text);
       padding: 11px 12px; border-radius: 9px; font-size: 14px; margin-bottom: 12px; outline: none;
     }
-    input:focus { border-color: var(--accent); }
+    input[type="text"]:focus { border-color: var(--accent); }
     .row { display: flex; gap: 8px; align-items: center; }
-    .row input { margin-bottom: 0; }
+    .row input[type="text"] { margin-bottom: 0; }
     .btn {
       width: 100%; border: none; border-radius: 9px; padding: 12px 14px; font-size: 14px; font-weight: 700;
       cursor: pointer; transition: 0.15s; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -78,8 +78,10 @@
     .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
     .btn-secondary { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; }
     .btn-success { background: var(--success); color: #052e16; }
+    .btn-warning { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.45); }
     .btn-danger { background: rgba(239,68,68,0.16); color: #fca5a5; border: 1px solid rgba(239,68,68,0.35); }
     .btn-sm { width: auto; padding: 8px 11px; font-size: 12px; white-space: nowrap; }
+    .btn-xs { width: auto; padding: 5px 9px; font-size: 11.5px; border-radius: 7px; white-space: nowrap; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .map-toolbar {
       display: flex; flex-wrap: wrap; gap: 6px; justify-content: space-between; align-items: center;
@@ -93,7 +95,7 @@
     }
     #map { height: 270px; width: 100%; border-radius: 10px; border: 1px solid #334155; z-index: 1; }
     .map-wrap.fullscreen #map { flex: 1; height: auto; min-height: 0; margin-bottom: 8px; }
-    #proofMap { height: 260px; width: 100%; border-radius: 10px; border: 1px solid #334155; margin-bottom: 12px; z-index: 1; }
+    #proofMap { height: 280px; width: 100%; border-radius: 10px; border: 1px solid #334155; margin-bottom: 12px; z-index: 1; }
     .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
     .stat-box { background: var(--input-bg); border: 1px solid #1e293b; border-radius: 10px; padding: 10px; text-align: center; }
     .stat-val { font-size: 16px; font-weight: 800; color: #fff; }
@@ -133,7 +135,15 @@
     .hidden { display: none !important; }
     .proof-box {
       background: var(--input-bg); border: 1px dashed #475569; border-radius: 10px; padding: 12px;
-      font-size: 12.5px; line-height: 1.55; color: #e2e8f0; margin-bottom: 10px;
+      font-size: 12.5px; line-height: 1.55; color: #e2e8f0; margin-bottom: 10px; white-space: pre-line;
+    }
+    .toggle-row {
+      display: flex; align-items: center; gap: 10px; background: var(--input-bg);
+      border: 1px solid #1e293b; border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;
+      cursor: pointer; user-select: none;
+    }
+    .toggle-row input[type="checkbox"] {
+      width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0;
     }
     .legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--muted); margin-bottom: 10px; align-items: center; }
     .dot-green { width: 10px; height: 10px; border-radius: 50%; background: #10b981; display: inline-block; margin-right: 5px; border: 2px solid #fff; }
@@ -253,11 +263,17 @@
         </div>
 
         <label for="routeCampaignInput">Campaign / Client Name</label>
-        <input id="routeCampaignInput" type="text" placeholder="e.g., Downtown Billboard Loop - Morning" />
+        <input id="routeCampaignInput" type="text" placeholder="e.g., Downtown Billboard Loop - Morning" oninput="saveDraftToStorage()" />
 
-        <div class="grid-2">
+        <!-- IDLE STATE BUTTON -->
+        <div id="idleControls">
           <button id="startBtn" class="btn btn-success" onclick="startTracking()">▶ Start Route</button>
-          <button id="stopBtn" class="btn btn-danger" onclick="stopAndSaveRoute()" disabled>■ Stop &amp; Save</button>
+        </div>
+
+        <!-- ACTIVE OR PAUSED STATE BUTTONS -->
+        <div id="activeControls" class="grid-2 hidden">
+          <button id="pauseResumeBtn" class="btn btn-warning" onclick="togglePauseRoute()">⏸ Pause</button>
+          <button id="stopBtn" class="btn btn-danger" onclick="stopAndSaveRoute()">■ Stop &amp; Save</button>
         </div>
       </div>
     </div>
@@ -266,7 +282,7 @@
     <div id="savedTab" class="tab-panel">
       <div class="card">
         <h2>Saved Billboard Routes</h2>
-        <p class="desc">Completed routes stored on this device. Tap any route to view its map, start/end pins, and Client Proof link.</p>
+        <p class="desc">Completed routes stored on this device. Tap <strong>Continue</strong> to keep tracking from where you stopped, or <strong>Proof</strong> to share with a client.</p>
         <div id="savedRoutesList"></div>
       </div>
     </div>
@@ -275,14 +291,26 @@
     <div id="proofTab" class="tab-panel">
       <div class="card">
         <h2>Client Proof-of-Performance</h2>
-        <p class="desc">Verified GPS summary and shareable route map link for your client.</p>
-        <div id="proofLinkRow" class="hidden" style="margin-bottom:10px;">
-          <label for="proofShareUrl">Shareable Client Proof Map Link</label>
-          <div class="row" style="margin-bottom:8px;">
-            <input id="proofShareUrl" type="text" readonly style="font-size:12px;" />
-            <button type="button" class="btn btn-secondary btn-sm" onclick="copyProofLink()">Copy Link</button>
+        <p class="desc">By default, the client link shows only the <strong>Date</strong> and <strong>Vehicle Route Map</strong>. Toggle metrics on below if a client also wants time, distance, and duration.</p>
+
+        <div id="proofOptionsArea" class="hidden">
+          <label class="toggle-row" for="includeMetricsToggle">
+            <input type="checkbox" id="includeMetricsToggle" onchange="onProofMetricsToggleChange()" />
+            <div>
+              <div style="font-size:13px; font-weight:700; color:#f8fafc;">Include Time, Distance &amp; Active Duration</div>
+              <div style="font-size:11.5px; color:var(--muted);">Off = Date &amp; Route Map only • On = Adds miles, duration &amp; pings</div>
+            </div>
+          </label>
+
+          <div id="proofLinkRow" style="margin-bottom:10px;">
+            <label for="proofShareUrl">Shareable Client Proof Map Link</label>
+            <div class="row" style="margin-bottom:8px;">
+              <input id="proofShareUrl" type="text" readonly style="font-size:12px;" />
+              <button type="button" class="btn btn-secondary btn-sm" onclick="copyProofLink()">Copy Link</button>
+            </div>
           </div>
         </div>
+
         <div id="proofContent" class="proof-box">No route selected yet. Complete a route or pick one from Saved Routes.</div>
         <button class="btn btn-primary" onclick="copyProofSummary()">Copy Client Verification Summary</button>
         <div id="proofAlert" class="alert ok"></div>
@@ -332,6 +360,7 @@
   const SUPABASE_KEY = "sb_publishable_6UJlq6b6kwY_FVQNzCw8mw_Pg8aVftE";
   const OWNER_PIN = "CLEARLINE2026";
   const PUBLIC_APP_URL = "https://clearline-operations3.vercel.app";
+  const DRAFT_STORAGE_KEY = "cl_active_route_draft";
 
   const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -642,10 +671,13 @@
   }
 
   // =========================================================
-  // GPS ROUTE TRACKER, START/END MARKERS & CLIENT PROOF LINK
+  // GPS ROUTE TRACKER, PAUSE/RESUME & PERSISTENCE
   // =========================================================
-  let map, polyline, startMarker, endMarker, myLocationMarker = null, myAccuracyCircle = null, watchId = null, bgWatcherId = null, wakeLock = null;
-  let coords = [], totalMiles = 0, startTime = null, timerInt = null;
+  let map, polyline, startMarker, endMarker, myLocationMarker = null, myAccuracyCircle = null;
+  let watchId = null, bgWatcherId = null, wakeLock = null;
+  let coords = [], totalMiles = 0;
+  let segmentStartMs = null, accumulatedMs = 0, timerInt = null;
+  let isTrackingActive = false, isPaused = false, continuingSavedId = null;
   let autoFollow = true, isFullScreenMap = false, activeProofRecord = null;
 
   function createDotIcon(color) {
@@ -667,6 +699,133 @@
       attribution: "&copy; OpenStreetMap"
     }).addTo(map);
     polyline = L.polyline([], { color: "#3b82f6", weight: 5 }).addTo(map);
+  }
+
+  function formatDurationMs(ms) {
+    const totalSecs = Math.max(0, Math.floor(ms / 1000));
+    const hrs = Math.floor(totalSecs / 3600);
+    const mins = Math.floor((totalSecs % 3600) / 60);
+    const secs = totalSecs % 60;
+    const mStr = String(mins).padStart(2, "0");
+    const sStr = String(secs).padStart(2, "0");
+    return hrs > 0 ? `${hrs}:${mStr}:${sStr}` : `${mStr}:${sStr}`;
+  }
+
+  function parseDurationToMs(str) {
+    if (!str) return 0;
+    const parts = String(str).split(":").map(Number);
+    if (parts.some(isNaN)) return 0;
+    if (parts.length === 3) return ((parts[0] * 3600) + (parts[1] * 60) + parts[2]) * 1000;
+    if (parts.length === 2) return ((parts[0] * 60) + parts[1]) * 1000;
+    return 0;
+  }
+
+  function getCurrentElapsedMs() {
+    if (!isPaused && segmentStartMs !== null) {
+      return accumulatedMs + (Date.now() - segmentStartMs);
+    }
+    return accumulatedMs;
+  }
+
+  function updateStatsUI() {
+    const milesStr = totalMiles.toFixed(2);
+    const timeStr = formatDurationMs(getCurrentElapsedMs());
+    document.getElementById("statMiles").textContent = milesStr;
+    document.getElementById("statPoints").textContent = coords.length;
+    document.getElementById("statTime").textContent = timeStr;
+    document.getElementById("fsMiles").textContent = milesStr;
+    document.getElementById("fsPings").textContent = coords.length;
+    document.getElementById("fsTime").textContent = timeStr;
+  }
+
+  function syncRouteControlsUI() {
+    const idleBox = document.getElementById("idleControls");
+    const activeBox = document.getElementById("activeControls");
+    const pauseBtn = document.getElementById("pauseResumeBtn");
+    const livePill = document.getElementById("livePill");
+
+    if (!isTrackingActive && !isPaused) {
+      idleBox.classList.remove("hidden");
+      activeBox.classList.add("hidden");
+      return;
+    }
+
+    idleBox.classList.add("hidden");
+    activeBox.classList.remove("hidden");
+
+    if (isPaused) {
+      pauseBtn.textContent = "▶ Resume";
+      pauseBtn.className = "btn btn-success";
+      livePill.textContent = "PAUSED";
+      livePill.classList.remove("claimed");
+    } else {
+      pauseBtn.textContent = "⏸ Pause";
+      pauseBtn.className = "btn btn-warning";
+      livePill.textContent = "LIVE GPS";
+      livePill.classList.add("claimed");
+    }
+  }
+
+  function saveDraftToStorage() {
+    if (!isTrackingActive && !isPaused) return;
+    try {
+      const draft = {
+        coords: coords,
+        totalMiles: totalMiles,
+        accumulatedMs: getCurrentElapsedMs(),
+        isPaused: true, // Restores safely in PAUSED state so user taps Resume when ready
+        campaign: document.getElementById("routeCampaignInput").value,
+        continuingSavedId: continuingSavedId,
+        updatedAt: Date.now()
+      };
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    } catch (e) {}
+  }
+
+  function clearDraftFromStorage() {
+    localStorage.removeItem(DRAFT_STORAGE_KEY);
+  }
+
+  function renderCoordsOnMap(fitToRoute = false) {
+    polyline.setLatLngs(coords);
+    if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
+    if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
+
+    if (coords.length > 0) {
+      startMarker = L.marker(coords[0], { icon: greenStartIcon }).bindPopup("Start").addTo(map);
+      endMarker = L.marker(coords[coords.length - 1], { icon: redEndIcon }).bindPopup("Current / End").addTo(map);
+      if (fitToRoute && coords.length > 1) {
+        map.fitBounds(polyline.getBounds(), { padding: [24, 24] });
+      } else {
+        map.setView(coords[coords.length - 1], Math.max(map.getZoom(), 15));
+      }
+    }
+  }
+
+  function restoreDraftOnLoad() {
+    try {
+      const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      if (!draft || !Array.isArray(draft.coords)) return;
+
+      coords = draft.coords;
+      totalMiles = Number(draft.totalMiles) || 0;
+      accumulatedMs = Number(draft.accumulatedMs) || 0;
+      segmentStartMs = null;
+      isTrackingActive = true;
+      isPaused = true;
+      continuingSavedId = draft.continuingSavedId || null;
+
+      if (draft.campaign) {
+        document.getElementById("routeCampaignInput").value = draft.campaign;
+      }
+
+      renderCoordsOnMap(true);
+      updateStatsUI();
+      syncRouteControlsUI();
+      document.getElementById("gpsStatusText").textContent = "Route paused & saved — Tap Resume to continue";
+    } catch (e) {}
   }
 
   function toggleFullScreenMap() {
@@ -741,7 +900,7 @@
         }
       }
 
-      if (watchId === null && !bgWatcherId) {
+      if (!isTrackingActive) {
         statusEl.textContent = `Located (${lat.toFixed(5)}, ${lng.toFixed(5)}) — Ready`;
       }
       btn.disabled = false;
@@ -810,6 +969,7 @@
   }
 
   function handleGpsPoint(latitude, longitude) {
+    if (isPaused) return;
     if (coords.length > 0) {
       const prev = coords[coords.length - 1];
       totalMiles += haversineMiles(prev[0], prev[1], latitude, longitude);
@@ -830,50 +990,33 @@
       map.setView([latitude, longitude], Math.max(map.getZoom(), 15));
     }
 
-    const milesStr = totalMiles.toFixed(2);
-    document.getElementById("statMiles").textContent = milesStr;
-    document.getElementById("statPoints").textContent = coords.length;
-    document.getElementById("fsMiles").textContent = milesStr;
-    document.getElementById("fsPings").textContent = coords.length;
+    updateStatsUI();
+    saveDraftToStorage();
   }
 
-  async function startTracking() {
+  async function beginLiveWatchers() {
     const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
     if (!capBg && !navigator.geolocation) {
       alert("GPS is not supported on this browser.");
-      return;
+      return false;
     }
 
-    coords = [];
-    totalMiles = 0;
-    startTime = Date.now();
+    isTrackingActive = true;
+    isPaused = false;
+    segmentStartMs = Date.now();
     autoFollow = true;
     document.getElementById("followBtn").textContent = "◎ Follow: ON";
-    polyline.setLatLngs([]);
-    if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
-    if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
+    document.getElementById("gpsStatusText").textContent = capBg
+      ? "Recording route (Background GPS active)..."
+      : "Recording live street route...";
 
-    document.getElementById("statMiles").textContent = "0.00";
-    document.getElementById("statPoints").textContent = "0";
-    document.getElementById("statTime").textContent = "00:00";
-    document.getElementById("fsMiles").textContent = "0.00";
-    document.getElementById("fsPings").textContent = "0";
-    document.getElementById("fsTime").textContent = "00:00";
-    document.getElementById("livePill").textContent = "LIVE GPS";
-    document.getElementById("livePill").classList.add("claimed");
-    document.getElementById("gpsStatusText").textContent = capBg ? "Recording route (Background GPS active)..." : "Recording live street route...";
-    document.getElementById("startBtn").disabled = true;
-    document.getElementById("stopBtn").disabled = false;
-
+    syncRouteControlsUI();
+    saveDraftToStorage();
     await requestWakeLock();
 
+    clearInterval(timerInt);
     timerInt = setInterval(() => {
-      const secs = Math.floor((Date.now() - startTime) / 1000);
-      const m = String(Math.floor(secs / 60)).padStart(2, "0");
-      const s = String(secs % 60).padStart(2, "0");
-      const timeStr = `${m}:${s}`;
-      document.getElementById("statTime").textContent = timeStr;
-      document.getElementById("fsTime").textContent = timeStr;
+      updateStatsUI();
     }, 1000);
 
     if (capBg) {
@@ -897,9 +1040,10 @@
         document.getElementById("gpsStatusText").textContent = "GPS Warning: " + err.message;
       }, { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 });
     }
+    return true;
   }
 
-  async function stopAndSaveRoute() {
+  async function stopLiveWatchers() {
     if (watchId !== null) {
       navigator.geolocation.clearWatch(watchId);
       watchId = null;
@@ -910,15 +1054,92 @@
       bgWatcherId = null;
     }
     clearInterval(timerInt);
+    timerInt = null;
     await releaseWakeLock();
+  }
+
+  async function startTracking() {
+    coords = [];
+    totalMiles = 0;
+    accumulatedMs = 0;
+    segmentStartMs = null;
+    continuingSavedId = null;
+    polyline.setLatLngs([]);
+    if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
+    if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
+
+    updateStatsUI();
+    await beginLiveWatchers();
+  }
+
+  async function togglePauseRoute() {
+    if (!isTrackingActive) return;
+
+    if (!isPaused) {
+      // PAUSE ROUTE
+      if (segmentStartMs !== null) {
+        accumulatedMs += (Date.now() - segmentStartMs);
+        segmentStartMs = null;
+      }
+      isPaused = true;
+      await stopLiveWatchers();
+      updateStatsUI();
+      syncRouteControlsUI();
+      saveDraftToStorage();
+      document.getElementById("gpsStatusText").textContent = "Route paused — Safe to close app & resume anytime";
+    } else {
+      // RESUME ROUTE
+      await beginLiveWatchers();
+    }
+  }
+
+  async function continueSavedRoute(idx) {
+    const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
+    const rec = saved[idx];
+    if (!rec) return;
+
+    if (isTrackingActive && !isPaused) {
+      alert("Pause or stop your current active route first.");
+      return;
+    }
+
+    await stopLiveWatchers();
+    coords = Array.isArray(rec.coords) ? rec.coords.map(pt => [pt[0], pt[1]]) : [];
+    totalMiles = parseFloat(rec.miles) || 0;
+    accumulatedMs = parseDurationToMs(rec.duration);
+    segmentStartMs = null;
+    isTrackingActive = true;
+    isPaused = true;
+    continuingSavedId = rec.id;
+
+    document.getElementById("routeCampaignInput").value = rec.campaign || "";
+    switchTab("gpsTab", document.querySelector('[data-tab="gpsTab"]'));
+
+    setTimeout(() => {
+      map.invalidateSize();
+      renderCoordsOnMap(true);
+      updateStatsUI();
+      syncRouteControlsUI();
+      saveDraftToStorage();
+      document.getElementById("gpsStatusText").textContent = `Loaded "${rec.campaign}" — Tap Resume to continue tracking`;
+    }, 150);
+  }
+
+  async function stopAndSaveRoute() {
+    if (!isPaused && segmentStartMs !== null) {
+      accumulatedMs += (Date.now() - segmentStartMs);
+      segmentStartMs = null;
+    }
+    await stopLiveWatchers();
 
     const campaign = document.getElementById("routeCampaignInput").value.trim() || "Billboard Route";
-    const duration = document.getElementById("statTime").textContent;
+    const duration = formatDurationMs(accumulatedMs);
     const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
     const nowMs = Date.now();
+    const recordId = continuingSavedId || ("R-" + nowMs.toString(36).toUpperCase());
 
     const record = {
-      id: "R-" + nowMs.toString(36).toUpperCase(),
+      id: recordId,
       campaign,
       miles: totalMiles.toFixed(2),
       pings: coords.length,
@@ -928,8 +1149,18 @@
       coords: coords.slice()
     };
 
+    const existingIdx = saved.findIndex(item => item.id === recordId);
+    if (existingIdx !== -1) {
+      saved.splice(existingIdx, 1);
+    }
     saved.unshift(record);
     localStorage.setItem("cl_saved_routes", JSON.stringify(saved));
+    clearDraftFromStorage();
+
+    isTrackingActive = false;
+    isPaused = false;
+    continuingSavedId = null;
+    syncRouteControlsUI();
 
     let cloudMsg = "Route saved with shareable map proof link.";
     try {
@@ -948,8 +1179,6 @@
     document.getElementById("livePill").textContent = "SAVED";
     document.getElementById("livePill").classList.remove("claimed");
     document.getElementById("gpsStatusText").textContent = cloudMsg;
-    document.getElementById("startBtn").disabled = false;
-    document.getElementById("stopBtn").disabled = true;
 
     renderSavedRoutes();
     showProof(record);
@@ -964,12 +1193,15 @@
       return;
     }
     list.innerHTML = saved.map((r, idx) => `
-      <div class="key-item" style="cursor:pointer;" onclick="selectSavedProof(${idx})">
-        <div>
+      <div class="key-item">
+        <div style="cursor:pointer; flex:1;" onclick="selectSavedProof(${idx})">
           <div class="key-title">${escapeHtml(r.campaign)}</div>
           <div class="key-meta">${r.miles} mi • ${r.duration} • ${r.pings} GPS pings • ${escapeHtml(r.date)}</div>
         </div>
-        <span class="pill claimed">Proof →</span>
+        <div style="display:flex; gap:6px; align-items:center; flex-shrink:0;">
+          <button type="button" class="btn btn-warning btn-xs" onclick="continueSavedRoute(${idx})">▶ Continue</button>
+          <button type="button" class="btn btn-success btn-xs" onclick="selectSavedProof(${idx})">Proof →</button>
+        </div>
       </div>
     `).join("");
   }
@@ -982,13 +1214,22 @@
     }
   }
 
-  function buildProofSummaryText(r) {
-    return `CLEARLINE OPERATIONS — GPS PROOF OF PERFORMANCE
+  // =========================================================
+  // CLIENT PROOF SUMMARY & LINK (CLEAN BY DEFAULT + METRICS TOGGLE)
+  // =========================================================
+  function buildProofSummaryText(r, includeMetrics = false) {
+    if (includeMetrics) {
+      return `CLEARLINE OPERATIONS — GPS PROOF OF PERFORMANCE
 Campaign: ${r.campaign}
-Completed: ${r.date}
+Date: ${r.date}
 Distance Tracked: ${r.miles} miles (${r.pings} GPS pings)
 Active Duration: ${r.duration}
-${r.license}
+Status: VERIFIED ROUTE`;
+    }
+    return `CLEARLINE OPERATIONS — VERIFIED VEHICLE ROUTE
+Campaign: ${r.campaign}
+Date: ${r.date}
+Route Path: Verified on map above (Start to End)
 Status: VERIFIED ROUTE`;
   }
 
@@ -1043,29 +1284,42 @@ Status: VERIFIED ROUTE`;
     }
   }
 
-  function buildProofUrl(r) {
+  function buildProofUrl(r, includeMetrics = false) {
     const baseUrl = PUBLIC_APP_URL;
     const encoded = encodeProofPayload(r);
+    const metricsParam = includeMetrics ? "&metrics=1" : "";
     return encoded
-      ? `${baseUrl}?proof=${encodeURIComponent(r.id)}&d=${encoded}`
-      : `${baseUrl}?proof=${encodeURIComponent(r.id)}`;
+      ? `${baseUrl}?proof=${encodeURIComponent(r.id)}&d=${encoded}${metricsParam}`
+      : `${baseUrl}?proof=${encodeURIComponent(r.id)}${metricsParam}`;
+  }
+
+  function onProofMetricsToggleChange() {
+    if (!activeProofRecord) return;
+    const includeMetrics = document.getElementById("includeMetricsToggle").checked;
+    document.getElementById("proofContent").innerText = buildProofSummaryText(activeProofRecord, includeMetrics);
+    document.getElementById("proofShareUrl").value = buildProofUrl(activeProofRecord, includeMetrics);
   }
 
   function showProof(r) {
     activeProofRecord = r;
-    document.getElementById("proofContent").innerText = buildProofSummaryText(r);
-    const linkRow = document.getElementById("proofLinkRow");
-    const linkInput = document.getElementById("proofShareUrl");
-    linkRow.classList.remove("hidden");
-    linkInput.value = buildProofUrl(r);
+    const includeMetrics = document.getElementById("includeMetricsToggle").checked;
+    document.getElementById("proofOptionsArea").classList.remove("hidden");
+    document.getElementById("proofContent").innerText = buildProofSummaryText(r, includeMetrics);
+    document.getElementById("proofShareUrl").value = buildProofUrl(r, includeMetrics);
   }
 
   async function copyProofLink() {
     if (!activeProofRecord) return;
-    const url = buildProofUrl(activeProofRecord);
+    const includeMetrics = document.getElementById("includeMetricsToggle").checked;
+    const url = buildProofUrl(activeProofRecord, includeMetrics);
     if (navigator.clipboard) {
       await navigator.clipboard.writeText(url);
-      showAlert("proofAlert", "Shareable Client Proof map link copied!");
+      showAlert(
+        "proofAlert",
+        includeMetrics
+          ? "Client Proof link copied (with Time, Distance & Duration)!"
+          : "Clean Client Proof link copied (Date & Route Map only)!"
+      );
     }
   }
 
@@ -1084,6 +1338,7 @@ Status: VERIFIED ROUTE`;
     const params = new URLSearchParams(window.location.search);
     const proofId = (params.get("proof") || "").trim();
     const embeddedData = (params.get("d") || "").trim();
+    const showMetrics = params.get("metrics") === "1";
     if (!proofId && !embeddedData) return false;
 
     document.getElementById("mainApp").classList.add("hidden");
@@ -1123,7 +1378,7 @@ Status: VERIFIED ROUTE`;
     }
 
     activeProofRecord = rec;
-    document.getElementById("publicProofDetails").innerText = buildProofSummaryText(rec);
+    document.getElementById("publicProofDetails").innerText = buildProofSummaryText(rec, showMetrics);
 
     const pts = Array.isArray(rec.coords) ? rec.coords : [];
     if (pts.length > 0) {
@@ -1147,11 +1402,16 @@ Status: VERIFIED ROUTE`;
     }
   }
 
+  window.addEventListener("beforeunload", () => {
+    saveDraftToStorage();
+  });
+
   window.addEventListener("DOMContentLoaded", async () => {
     const isProof = await checkPublicProofMode();
     if (isProof) return;
 
     initMap();
+    restoreDraftOnLoad();
     renderSavedRoutes();
     checkAccessOnLoad();
   });
