@@ -150,6 +150,15 @@
     .dot-blue { width: 10px; height: 10px; border-radius: 50%; background: #3b82f6; display: inline-block; margin-right: 4px; border: 2px solid #fff; }
     .dot-yellow { width: 10px; height: 10px; border-radius: 50%; background: #f59e0b; display: inline-block; margin-right: 4px; border: 2px solid #fff; }
     .dot-red { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; display: inline-block; margin-right: 4px; border: 2px solid #fff; }
+    @keyframes pulseBlue {
+      0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.75); }
+      70% { box-shadow: 0 0 0 12px rgba(59, 130, 246, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+    }
+    .live-blue-dot {
+      width: 18px; height: 18px; border-radius: 50%; background: #3b82f6;
+      border: 3px solid #ffffff; animation: pulseBlue 1.8s infinite;
+    }
   </style>
 </head>
 <body>
@@ -222,7 +231,7 @@
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
           <div>
             <div style="font-size:13px; font-weight:700;" id="activeLicenseLabel">Licensed Unit: Owner Mode</div>
-            <div style="font-size:11.5px; color:var(--muted);" id="gpsStatusText">GPS Ready — Tap Start Route</div>
+            <div style="font-size:11.5px; color:var(--muted);" id="gpsStatusText">Live blue dot active — Tap Start Route</div>
           </div>
           <span id="livePill" class="pill">IDLE</span>
         </div>
@@ -232,12 +241,12 @@
             <div class="map-toolbar-group">
               <button type="button" id="locateMeBtn" class="btn btn-primary btn-sm" onclick="locateMeNow()">📍 Locate Me Now</button>
               <button type="button" id="fullScreenBtn" class="btn btn-secondary btn-sm" onclick="toggleFullScreenMap()">⛶ Full Screen</button>
-              <button type="button" id="followBtn" class="btn btn-secondary btn-sm" onclick="toggleAutoFollow()">◎ Follow: ON</button>
+              <button type="button" id="followBtn" class="btn btn-secondary btn-sm" onclick="toggleAutoFollow()">◎ Follow: OFF</button>
               <button type="button" id="recenterBtn" class="btn btn-secondary btn-sm" onclick="recenterMap()">⌖ Re-Center</button>
             </div>
             <div class="legend" style="margin-bottom:0;">
+              <span><i class="dot-blue"></i>You (Live)</span>
               <span><i class="dot-green"></i>Start</span>
-              <span><i class="dot-blue"></i>Live</span>
               <span><i class="dot-yellow"></i>Paused</span>
               <span><i class="dot-red"></i>Stop</span>
             </div>
@@ -665,13 +674,17 @@
     return String(str).replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
   }
 
-  let map, polyline, startMarker, statusDotMarker, myAccuracyCircle = null;
-  let watchId = null, bgWatcherId = null, locateWatchId = null, locateBgWatcherId = null, wakeLock = null;
-  let isLiveLocateMode = false, lastKnownLatLng = null;
+  // =========================================================
+  // CONTINUOUS LIVE BLUE DOT + FREE PAN/ZOOM + MANUAL RE-CENTER
+  // =========================================================
+  let map, polyline, startMarker = null, pausedPinMarker = null, stoppedPinMarker = null;
+  let liveVehicleMarker = null, liveAccuracyCircle = null;
+  let persistentWatchId = null, persistentBgWatcherId = null, wakeLock = null;
+  let isContinuousLiveActive = false, lastKnownLatLng = null;
   let coords = [], totalMiles = 0;
   let segmentStartMs = null, accumulatedMs = 0, timerInt = null;
   let isTrackingActive = false, isPaused = false, continuingSavedId = null;
-  let autoFollow = true, isFullScreenMap = false, activeProofRecord = null;
+  let autoFollow = false, isFullScreenMap = false, activeProofRecord = null;
 
   function createDotIcon(color) {
     return L.divIcon({
@@ -682,61 +695,50 @@
     });
   }
 
+  function createLiveBlueIcon() {
+    return L.divIcon({
+      className: "",
+      html: `<div class="live-blue-dot"></div>`,
+      iconSize: [18, 18],
+      iconAnchor: [9, 9]
+    });
+  }
+
   const greenStartIcon = createDotIcon("#10b981");
-  const blueLiveIcon = createDotIcon("#3b82f6");
+  const liveBlueIcon = createLiveBlueIcon();
   const yellowPausedIcon = createDotIcon("#f59e0b");
   const redEndIcon = createDotIcon("#ef4444");
 
-  function getStatusDotStyle() {
-    if (isTrackingActive && isPaused) {
-      return { icon: yellowPausedIcon, color: "#f59e0b", label: "Paused Location" };
-    }
-    if (!isTrackingActive && coords.length > 0 && !isLiveLocateMode) {
-      return { icon: redEndIcon, color: "#ef4444", label: "Stopped / Route End" };
-    }
-    return { icon: blueLiveIcon, color: "#3b82f6", label: "Live Location" };
-  }
-
-  function setStatusMarker(lat, lng, accuracy = null, panMap = false) {
+  function updateLiveBlueDot(lat, lng, accuracy = null, flyToLocation = false) {
     lastKnownLatLng = [lat, lng];
-    const style = getStatusDotStyle();
 
-    if (!statusDotMarker) {
-      statusDotMarker = L.marker([lat, lng], { icon: style.icon, zIndexOffset: 1000 })
-        .bindPopup(style.label)
+    if (!liveVehicleMarker) {
+      liveVehicleMarker = L.marker([lat, lng], { icon: liveBlueIcon, zIndexOffset: 2000 })
+        .bindPopup("Your Live Location")
         .addTo(map);
     } else {
-      statusDotMarker.setLatLng([lat, lng]);
-      statusDotMarker.setIcon(style.icon);
-      statusDotMarker.setPopupContent(style.label);
+      liveVehicleMarker.setLatLng([lat, lng]);
     }
 
-    if (accuracy && (isLiveLocateMode || (isTrackingActive && !isPaused))) {
-      if (myAccuracyCircle) {
-        myAccuracyCircle.setLatLng([lat, lng]).setRadius(accuracy).setStyle({ color: style.color, fillColor: style.color });
+    if (accuracy) {
+      if (liveAccuracyCircle) {
+        liveAccuracyCircle.setLatLng([lat, lng]).setRadius(accuracy);
       } else {
-        myAccuracyCircle = L.circle([lat, lng], {
+        liveAccuracyCircle = L.circle([lat, lng], {
           radius: accuracy,
-          color: style.color,
-          fillColor: style.color,
-          fillOpacity: 0.15,
+          color: "#3b82f6",
+          fillColor: "#3b82f6",
+          fillOpacity: 0.14,
           weight: 1
         }).addTo(map);
       }
-    } else if (myAccuracyCircle) {
-      map.removeLayer(myAccuracyCircle);
-      myAccuracyCircle = null;
     }
 
-    if (panMap || (autoFollow && (isLiveLocateMode || (isTrackingActive && !isPaused)))) {
-      map.setView([lat, lng], Math.max(map.getZoom(), 16));
-    }
-  }
-
-  function refreshStatusMarkerAppearance() {
-    const target = (coords.length > 0) ? coords[coords.length - 1] : lastKnownLatLng;
-    if (target) {
-      setStatusMarker(target[0], target[1], null, false);
+    // Only move camera if explicitly triggered (Locate Me Now / initial fix) or user turned Follow ON
+    if (flyToLocation) {
+      map.flyTo([lat, lng], 17, { animate: true, duration: 0.8 });
+    } else if (autoFollow) {
+      map.setView([lat, lng], map.getZoom());
     }
   }
 
@@ -747,6 +749,15 @@
       attribution: "&copy; OpenStreetMap"
     }).addTo(map);
     polyline = L.polyline([], { color: "#3b82f6", weight: 5 }).addTo(map);
+
+    // If user drags or zooms manually while Follow was ON, turn Follow OFF so it never snaps back
+    map.on("dragstart zoomstart", () => {
+      if (autoFollow) {
+        autoFollow = false;
+        const btn = document.getElementById("followBtn");
+        if (btn) btn.textContent = "◎ Follow: OFF";
+      }
+    });
   }
 
   function formatDurationMs(ms) {
@@ -834,18 +845,24 @@
     localStorage.removeItem(DRAFT_STORAGE_KEY);
   }
 
-  function renderCoordsOnMap(fitToRoute = false) {
-    polyline.setLatLngs(coords);
+  function clearRouteMarkers() {
     if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
+    if (pausedPinMarker) { map.removeLayer(pausedPinMarker); pausedPinMarker = null; }
+    if (stoppedPinMarker) { map.removeLayer(stoppedPinMarker); stoppedPinMarker = null; }
+  }
+
+  function renderCoordsOnMap(fitToRoute = false, markAsPaused = false) {
+    polyline.setLatLngs(coords);
+    clearRouteMarkers();
 
     if (coords.length > 0) {
-      startMarker = L.marker(coords[0], { icon: greenStartIcon }).bindPopup("Start").addTo(map);
+      startMarker = L.marker(coords[0], { icon: greenStartIcon }).bindPopup("Route Start").addTo(map);
       const lastPt = coords[coords.length - 1];
-      setStatusMarker(lastPt[0], lastPt[1], null, false);
+      if (markAsPaused) {
+        pausedPinMarker = L.marker(lastPt, { icon: yellowPausedIcon }).bindPopup("Paused Point").addTo(map);
+      }
       if (fitToRoute && coords.length > 1) {
         map.fitBounds(polyline.getBounds(), { padding: [24, 24] });
-      } else {
-        map.setView(lastPt, Math.max(map.getZoom(), 15));
       }
     }
   }
@@ -869,10 +886,10 @@
         document.getElementById("routeCampaignInput").value = draft.campaign;
       }
 
-      renderCoordsOnMap(true);
+      renderCoordsOnMap(true, true);
       updateStatsUI();
       syncRouteControlsUI();
-      document.getElementById("gpsStatusText").textContent = "Route paused (Yellow dot) — Tap Resume to continue";
+      document.getElementById("gpsStatusText").textContent = "Route paused (Yellow pin) — Blue dot live, tap Resume anytime";
     } catch (e) {}
   }
 
@@ -897,110 +914,115 @@
     autoFollow = !autoFollow;
     const btn = document.getElementById("followBtn");
     btn.textContent = autoFollow ? "◎ Follow: ON" : "◎ Follow: OFF";
-    if (autoFollow) {
-      const target = (coords.length > 0) ? coords[coords.length - 1] : lastKnownLatLng;
-      if (target) map.setView(target, map.getZoom());
+    if (autoFollow && lastKnownLatLng) {
+      map.setView(lastKnownLatLng, map.getZoom());
     }
   }
 
   function recenterMap() {
-    autoFollow = true;
-    document.getElementById("followBtn").textContent = "◎ Follow: ON";
-    const target = (coords.length > 0) ? coords[coords.length - 1] : lastKnownLatLng;
-    if (target) {
-      map.setView(target, Math.max(map.getZoom(), 16));
+    if (lastKnownLatLng) {
+      map.flyTo(lastKnownLatLng, 17, { animate: true, duration: 0.8 });
+    } else if (coords.length > 0) {
+      map.flyTo(coords[coords.length - 1], 17, { animate: true, duration: 0.8 });
     }
   }
 
-  async function stopLocateOnlyWatcher() {
-    isLiveLocateMode = false;
-    if (locateWatchId !== null) {
-      navigator.geolocation.clearWatch(locateWatchId);
-      locateWatchId = null;
-    }
-    const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
-    if (capBg && locateBgWatcherId) {
-      try { await capBg.removeWatcher({ id: locateBgWatcherId }); } catch (e) {}
-      locateBgWatcherId = null;
-    }
-    const btn = document.getElementById("locateMeBtn");
-    btn.textContent = "📍 Locate Me Now";
-    btn.className = "btn btn-primary btn-sm";
+  function haversineMiles(lat1, lon1, lat2, lon2) {
+    const R = 3958.8;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
-  async function locateMeNow() {
-    const btn = document.getElementById("locateMeBtn");
-    const statusEl = document.getElementById("gpsStatusText");
+  function onDeviceGpsUpdate(latitude, longitude, accuracy = null, flyToFirst = false) {
+    updateLiveBlueDot(latitude, longitude, accuracy, flyToFirst);
+
+    if (!isTrackingActive && !isPaused) {
+      document.getElementById("gpsStatusText").textContent = `Live blue dot active (${latitude.toFixed(5)}, ${longitude.toFixed(5)}) — Ready`;
+    }
 
     if (isTrackingActive && !isPaused) {
-      autoFollow = true;
-      document.getElementById("followBtn").textContent = "◎ Follow: ON";
-      if (lastKnownLatLng) map.flyTo(lastKnownLatLng, 17, { animate: true, duration: 0.8 });
-      return;
+      if (coords.length > 0) {
+        const prev = coords[coords.length - 1];
+        totalMiles += haversineMiles(prev[0], prev[1], latitude, longitude);
+      }
+      coords.push([latitude, longitude]);
+      polyline.setLatLngs(coords);
+
+      if (!startMarker) {
+        startMarker = L.marker([latitude, longitude], { icon: greenStartIcon }).bindPopup("Route Start").addTo(map);
+      }
+
+      updateStatsUI();
+      saveDraftToStorage();
+    }
+  }
+
+  async function ensureContinuousGpsTracking(flyToFirst = false) {
+    if (isContinuousLiveActive) {
+      if (lastKnownLatLng && flyToFirst) {
+        map.flyTo(lastKnownLatLng, 17, { animate: true, duration: 0.8 });
+      }
+      return true;
     }
 
-    if (isLiveLocateMode) {
-      await stopLocateOnlyWatcher();
-      refreshStatusMarkerAppearance();
-      if (!isTrackingActive) {
-        statusEl.textContent = "Live locate stopped — Tap Start Route or Locate Me Now";
-      }
-      return;
+    const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
+    const capGeo = window.Capacitor?.Plugins?.Geolocation;
+
+    if (!capBg && !navigator.geolocation) {
+      alert("GPS is not supported on this device.");
+      return false;
     }
 
-    isLiveLocateMode = true;
-    autoFollow = true;
-    document.getElementById("followBtn").textContent = "◎ Follow: ON";
-    btn.textContent = "🔵 Live Locating...";
-    btn.className = "btn btn-success btn-sm";
-    statusEl.textContent = "Live blue dot following you — Tap Start Route or Resume when ready";
-
-    const onLocateUpdate = (lat, lng, accuracy, isFirstFix = false) => {
-      if (!isLiveLocateMode) return;
-      setStatusMarker(lat, lng, accuracy, isFirstFix);
-      if (!isTrackingActive) {
-        statusEl.textContent = `Following live (${lat.toFixed(5)}, ${lng.toFixed(5)}) — Ready`;
-      }
-    };
+    isContinuousLiveActive = true;
 
     try {
-      const capGeo = window.Capacitor?.Plugins?.Geolocation;
       if (capGeo) {
         await capGeo.requestPermissions();
         const firstPos = await capGeo.getCurrentPosition({ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
-        onLocateUpdate(firstPos.coords.latitude, firstPos.coords.longitude, firstPos.coords.accuracy, true);
+        onDeviceGpsUpdate(firstPos.coords.latitude, firstPos.coords.longitude, firstPos.coords.accuracy, flyToFirst);
       } else if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
-          pos => onLocateUpdate(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, true),
+          pos => onDeviceGpsUpdate(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, flyToFirst),
           () => {},
           { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
         );
       }
 
-      const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
       if (capBg) {
-        locateBgWatcherId = await capBg.addWatcher({
-          backgroundMessage: "ClearLine Operations — Live GPS position active",
-          backgroundTitle: "ClearLine Live Locate",
+        persistentBgWatcherId = await capBg.addWatcher({
+          backgroundMessage: "ClearLine Operations — Live GPS tracking active",
+          backgroundTitle: "ClearLine Live GPS",
           requestPermissions: true,
           stale: false,
           distanceFilter: 3
         }, (location, error) => {
-          if (!error && location) {
-            onLocateUpdate(location.latitude, location.longitude, location.accuracy, false);
+          if (error) {
+            document.getElementById("gpsStatusText").textContent = "GPS Warning: " + error.message;
+            return;
+          }
+          if (location) {
+            onDeviceGpsUpdate(location.latitude, location.longitude, location.accuracy, false);
           }
         });
-      } else if (navigator.geolocation) {
-        locateWatchId = navigator.geolocation.watchPosition(
-          pos => onLocateUpdate(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, false),
-          err => { statusEl.textContent = "GPS Warning: " + err.message; },
+      } else {
+        persistentWatchId = navigator.geolocation.watchPosition(
+          pos => onDeviceGpsUpdate(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, false),
+          err => { document.getElementById("gpsStatusText").textContent = "GPS Warning: " + err.message; },
           { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
         );
       }
+      return true;
     } catch (err) {
-      await stopLocateOnlyWatcher();
-      alert("Location error: " + (err.message || err));
+      isContinuousLiveActive = false;
+      return false;
     }
+  }
+
+  // Only centers camera on your blue dot when you manually tap Locate Me Now
+  async function locateMeNow() {
+    await ensureContinuousGpsTracking(true);
   }
 
   async function requestWakeLock() {
@@ -1020,97 +1042,32 @@
     } catch (e) {}
   }
 
-  function haversineMiles(lat1, lon1, lat2, lon2) {
-    const R = 3958.8;
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
+  async function resumeRouteRecording() {
+    const ok = await ensureContinuousGpsTracking(false);
+    if (!ok) return;
 
-  function handleGpsPoint(latitude, longitude, accuracy = null) {
-    if (isPaused) return;
-    if (coords.length > 0) {
-      const prev = coords[coords.length - 1];
-      totalMiles += haversineMiles(prev[0], prev[1], latitude, longitude);
+    if (pausedPinMarker) {
+      map.removeLayer(pausedPinMarker);
+      pausedPinMarker = null;
     }
-    coords.push([latitude, longitude]);
-    polyline.setLatLngs(coords);
-
-    if (!startMarker) {
-      startMarker = L.marker([latitude, longitude], { icon: greenStartIcon }).bindPopup("Start").addTo(map);
-    }
-
-    setStatusMarker(latitude, longitude, accuracy, false);
-    updateStatsUI();
-    saveDraftToStorage();
-  }
-
-  async function beginLiveWatchers() {
-    const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
-    if (!capBg && !navigator.geolocation) {
-      alert("GPS is not supported on this browser.");
-      return false;
-    }
-
-    await stopLocateOnlyWatcher();
 
     isTrackingActive = true;
     isPaused = false;
     segmentStartMs = Date.now();
-    autoFollow = true;
-    document.getElementById("followBtn").textContent = "◎ Follow: ON";
-    document.getElementById("gpsStatusText").textContent = capBg
-      ? "Recording route (Blue dot moving with you)..."
-      : "Recording live street route (Blue dot active)...";
+    document.getElementById("gpsStatusText").textContent = "Recording route — Live blue dot tracking you";
 
-    refreshStatusMarkerAppearance();
     syncRouteControlsUI();
     saveDraftToStorage();
     await requestWakeLock();
+
+    if (lastKnownLatLng && coords.length === 0) {
+      onDeviceGpsUpdate(lastKnownLatLng[0], lastKnownLatLng[1], null, false);
+    }
 
     clearInterval(timerInt);
     timerInt = setInterval(() => {
       updateStatsUI();
     }, 1000);
-
-    if (capBg) {
-      bgWatcherId = await capBg.addWatcher({
-        backgroundMessage: "ClearLine Operations — Tracking billboard route",
-        backgroundTitle: "ClearLine GPS Active",
-        requestPermissions: true,
-        stale: false,
-        distanceFilter: 5
-      }, (location, error) => {
-        if (error) {
-          document.getElementById("gpsStatusText").textContent = "GPS Warning: " + error.message;
-          return;
-        }
-        if (location) handleGpsPoint(location.latitude, location.longitude, location.accuracy);
-      });
-    } else {
-      watchId = navigator.geolocation.watchPosition(pos => {
-        handleGpsPoint(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
-      }, err => {
-        document.getElementById("gpsStatusText").textContent = "GPS Warning: " + err.message;
-      }, { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 });
-    }
-    return true;
-  }
-
-  async function stopLiveWatchers() {
-    if (watchId !== null) {
-      navigator.geolocation.clearWatch(watchId);
-      watchId = null;
-    }
-    const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
-    if (capBg && bgWatcherId) {
-      try { await capBg.removeWatcher({ id: bgWatcherId }); } catch (e) {}
-      bgWatcherId = null;
-    }
-    clearInterval(timerInt);
-    timerInt = null;
-    await releaseWakeLock();
   }
 
   async function startTracking() {
@@ -1120,10 +1077,10 @@
     segmentStartMs = null;
     continuingSavedId = null;
     polyline.setLatLngs([]);
-    if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
+    clearRouteMarkers();
 
     updateStatsUI();
-    await beginLiveWatchers();
+    await resumeRouteRecording();
   }
 
   async function togglePauseRoute() {
@@ -1135,15 +1092,22 @@
         segmentStartMs = null;
       }
       isPaused = true;
-      await stopLiveWatchers();
-      await stopLocateOnlyWatcher();
-      refreshStatusMarkerAppearance();
+      clearInterval(timerInt);
+      timerInt = null;
+      await releaseWakeLock();
+
+      const pausePt = (coords.length > 0) ? coords[coords.length - 1] : lastKnownLatLng;
+      if (pausePt) {
+        if (pausedPinMarker) map.removeLayer(pausedPinMarker);
+        pausedPinMarker = L.marker(pausePt, { icon: yellowPausedIcon }).bindPopup("Paused Here").addTo(map);
+      }
+
       updateStatsUI();
       syncRouteControlsUI();
       saveDraftToStorage();
-      document.getElementById("gpsStatusText").textContent = "Route paused (Yellow dot) — Tap Resume to continue";
+      document.getElementById("gpsStatusText").textContent = "Route paused (Yellow pin) — Blue dot still tracking you live";
     } else {
-      await beginLiveWatchers();
+      await resumeRouteRecording();
     }
   }
 
@@ -1157,8 +1121,8 @@
       return;
     }
 
-    await stopLiveWatchers();
-    await stopLocateOnlyWatcher();
+    clearInterval(timerInt);
+    timerInt = null;
     coords = Array.isArray(rec.coords) ? rec.coords.map(pt => [pt[0], pt[1]]) : [];
     totalMiles = parseFloat(rec.miles) || 0;
     accumulatedMs = parseDurationToMs(rec.duration);
@@ -1172,11 +1136,11 @@
 
     setTimeout(() => {
       map.invalidateSize();
-      renderCoordsOnMap(true);
+      renderCoordsOnMap(true, true);
       updateStatsUI();
       syncRouteControlsUI();
       saveDraftToStorage();
-      document.getElementById("gpsStatusText").textContent = `Loaded "${rec.campaign}" (Yellow paused) — Tap Resume to continue`;
+      document.getElementById("gpsStatusText").textContent = `Loaded "${rec.campaign}" (Yellow pin) — Tap Resume to continue`;
     }, 150);
   }
 
@@ -1208,8 +1172,9 @@
       accumulatedMs += (Date.now() - segmentStartMs);
       segmentStartMs = null;
     }
-    await stopLiveWatchers();
-    await stopLocateOnlyWatcher();
+    clearInterval(timerInt);
+    timerInt = null;
+    await releaseWakeLock();
 
     const campaign = document.getElementById("routeCampaignInput").value.trim() || "Billboard Route";
     const duration = formatDurationMs(accumulatedMs);
@@ -1243,10 +1208,20 @@
     isTrackingActive = false;
     isPaused = false;
     continuingSavedId = null;
-    refreshStatusMarkerAppearance();
+
+    if (pausedPinMarker) {
+      map.removeLayer(pausedPinMarker);
+      pausedPinMarker = null;
+    }
+    const stopPt = (coords.length > 0) ? coords[coords.length - 1] : lastKnownLatLng;
+    if (stopPt) {
+      if (stoppedPinMarker) map.removeLayer(stoppedPinMarker);
+      stoppedPinMarker = L.marker(stopPt, { icon: redEndIcon }).bindPopup("Route Stopped / End").addTo(map);
+    }
+
     syncRouteControlsUI();
 
-    let cloudMsg = "Route stopped (Red dot) & saved (Date + Route only).";
+    let cloudMsg = "Route stopped (Red pin) — Blue dot still live.";
     try {
       const { error: shareErr } = await db
         .from("shared_routes")
@@ -1254,10 +1229,10 @@
       if (shareErr) {
         cloudMsg = "Saved locally (Supabase note: " + shareErr.message + ").";
       } else {
-        cloudMsg = "Route stopped (Red dot) & synced to cloud.";
+        cloudMsg = "Route stopped (Red pin) & synced — Blue dot still live.";
       }
     } catch (e) {
-      cloudMsg = "Route stopped (Red dot) & saved.";
+      cloudMsg = "Route stopped (Red pin) & saved.";
     }
 
     document.getElementById("livePill").textContent = "STOPPED";
@@ -1499,7 +1474,8 @@ Status: VERIFIED ROUTE`;
     initMap();
     restoreDraftOnLoad();
     renderSavedRoutes();
-    checkAccessOnLoad();
+    await checkAccessOnLoad();
+    ensureContinuousGpsTracking(true);
   });
 </script>
 </body>
