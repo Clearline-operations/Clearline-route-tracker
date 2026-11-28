@@ -357,9 +357,6 @@
   </div>
 
 <script>
-  // =========================================================
-  // HARDCODED SUPABASE CREDENTIALS (NO MANUAL SETUP REQUIRED)
-  // =========================================================
   const SUPABASE_URL = "https://kqktyxaqdxbskzoeiatv.supabase.co";
   const SUPABASE_KEY = "sb_publishable_6UJlq6b6kwY_FVQNzCw8mw_Pg8aVftE";
   const OWNER_PIN = "CLEARLINE2026";
@@ -405,9 +402,6 @@
     if (tabId === "gpsTab" && map) setTimeout(() => map.invalidateSize(), 150);
   }
 
-  // =========================================================
-  // SINGLE-DEVICE LOCK & ACTIVATION LOGIC
-  // =========================================================
   async function checkAccessOnLoad() {
     refreshGeneratedKey();
     await verifyDbConnection();
@@ -552,9 +546,6 @@
     }
   }
 
-  // =========================================================
-  // SUPABASE KEY MANAGEMENT (SELL / KEYS TAB)
-  // =========================================================
   async function verifyDbConnection() {
     const badge = document.getElementById("dbBadge");
     const { error } = await db.from("device_keys").select("key_code").limit(1);
@@ -674,9 +665,6 @@
     return String(str).replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
   }
 
-  // =========================================================
-  // GPS ROUTE TRACKER, LIVE LOCATE-ME, PAUSE/RESUME & PERSISTENCE
-  // =========================================================
   let map, polyline, startMarker, statusDotMarker, myAccuracyCircle = null;
   let watchId = null, bgWatcherId = null, locateWatchId = null, locateBgWatcherId = null, wakeLock = null;
   let isLiveLocateMode = false, lastKnownLatLng = null;
@@ -1036,4 +1024,483 @@
     const R = 3958.8;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(d
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  function handleGpsPoint(latitude, longitude, accuracy = null) {
+    if (isPaused) return;
+    if (coords.length > 0) {
+      const prev = coords[coords.length - 1];
+      totalMiles += haversineMiles(prev[0], prev[1], latitude, longitude);
+    }
+    coords.push([latitude, longitude]);
+    polyline.setLatLngs(coords);
+
+    if (!startMarker) {
+      startMarker = L.marker([latitude, longitude], { icon: greenStartIcon }).bindPopup("Start").addTo(map);
+    }
+
+    setStatusMarker(latitude, longitude, accuracy, false);
+    updateStatsUI();
+    saveDraftToStorage();
+  }
+
+  async function beginLiveWatchers() {
+    const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
+    if (!capBg && !navigator.geolocation) {
+      alert("GPS is not supported on this browser.");
+      return false;
+    }
+
+    await stopLocateOnlyWatcher();
+
+    isTrackingActive = true;
+    isPaused = false;
+    segmentStartMs = Date.now();
+    autoFollow = true;
+    document.getElementById("followBtn").textContent = "◎ Follow: ON";
+    document.getElementById("gpsStatusText").textContent = capBg
+      ? "Recording route (Blue dot moving with you)..."
+      : "Recording live street route (Blue dot active)...";
+
+    refreshStatusMarkerAppearance();
+    syncRouteControlsUI();
+    saveDraftToStorage();
+    await requestWakeLock();
+
+    clearInterval(timerInt);
+    timerInt = setInterval(() => {
+      updateStatsUI();
+    }, 1000);
+
+    if (capBg) {
+      bgWatcherId = await capBg.addWatcher({
+        backgroundMessage: "ClearLine Operations — Tracking billboard route",
+        backgroundTitle: "ClearLine GPS Active",
+        requestPermissions: true,
+        stale: false,
+        distanceFilter: 5
+      }, (location, error) => {
+        if (error) {
+          document.getElementById("gpsStatusText").textContent = "GPS Warning: " + error.message;
+          return;
+        }
+        if (location) handleGpsPoint(location.latitude, location.longitude, location.accuracy);
+      });
+    } else {
+      watchId = navigator.geolocation.watchPosition(pos => {
+        handleGpsPoint(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+      }, err => {
+        document.getElementById("gpsStatusText").textContent = "GPS Warning: " + err.message;
+      }, { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 });
+    }
+    return true;
+  }
+
+  async function stopLiveWatchers() {
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }
+    const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
+    if (capBg && bgWatcherId) {
+      try { await capBg.removeWatcher({ id: bgWatcherId }); } catch (e) {}
+      bgWatcherId = null;
+    }
+    clearInterval(timerInt);
+    timerInt = null;
+    await releaseWakeLock();
+  }
+
+  async function startTracking() {
+    coords = [];
+    totalMiles = 0;
+    accumulatedMs = 0;
+    segmentStartMs = null;
+    continuingSavedId = null;
+    polyline.setLatLngs([]);
+    if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
+
+    updateStatsUI();
+    await beginLiveWatchers();
+  }
+
+  async function togglePauseRoute() {
+    if (!isTrackingActive) return;
+
+    if (!isPaused) {
+      if (segmentStartMs !== null) {
+        accumulatedMs += (Date.now() - segmentStartMs);
+        segmentStartMs = null;
+      }
+      isPaused = true;
+      await stopLiveWatchers();
+      await stopLocateOnlyWatcher();
+      refreshStatusMarkerAppearance();
+      updateStatsUI();
+      syncRouteControlsUI();
+      saveDraftToStorage();
+      document.getElementById("gpsStatusText").textContent = "Route paused (Yellow dot) — Tap Resume to continue";
+    } else {
+      await beginLiveWatchers();
+    }
+  }
+
+  async function continueSavedRoute(idx) {
+    const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
+    const rec = saved[idx];
+    if (!rec) return;
+
+    if (isTrackingActive && !isPaused) {
+      alert("Pause or stop your current active route first.");
+      return;
+    }
+
+    await stopLiveWatchers();
+    await stopLocateOnlyWatcher();
+    coords = Array.isArray(rec.coords) ? rec.coords.map(pt => [pt[0], pt[1]]) : [];
+    totalMiles = parseFloat(rec.miles) || 0;
+    accumulatedMs = parseDurationToMs(rec.duration);
+    segmentStartMs = null;
+    isTrackingActive = true;
+    isPaused = true;
+    continuingSavedId = rec.id;
+
+    document.getElementById("routeCampaignInput").value = rec.campaign || "";
+    switchTab("gpsTab", document.querySelector('[data-tab="gpsTab"]'));
+
+    setTimeout(() => {
+      map.invalidateSize();
+      renderCoordsOnMap(true);
+      updateStatsUI();
+      syncRouteControlsUI();
+      saveDraftToStorage();
+      document.getElementById("gpsStatusText").textContent = `Loaded "${rec.campaign}" (Yellow paused) — Tap Resume to continue`;
+    }, 150);
+  }
+
+  function extractDateOnly(rawDateStr, fallbackMs = Date.now()) {
+    if (rawDateStr) {
+      const parsed = new Date(rawDateStr);
+      if (!isNaN(parsed.getTime())) {
+        return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      }
+      return String(rawDateStr).split(",")[0].trim();
+    }
+    return new Date(fallbackMs).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function extractTimeOnly(rawDateStr, fallbackMs = Date.now()) {
+    if (rawDateStr) {
+      const parsed = new Date(rawDateStr);
+      if (!isNaN(parsed.getTime())) {
+        return parsed.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      }
+      const parts = String(rawDateStr).split(",");
+      if (parts.length > 1) return parts.slice(1).join(",").trim();
+    }
+    return new Date(fallbackMs).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  }
+
+  async function stopAndSaveRoute() {
+    if (!isPaused && segmentStartMs !== null) {
+      accumulatedMs += (Date.now() - segmentStartMs);
+      segmentStartMs = null;
+    }
+    await stopLiveWatchers();
+    await stopLocateOnlyWatcher();
+
+    const campaign = document.getElementById("routeCampaignInput").value.trim() || "Billboard Route";
+    const duration = formatDurationMs(accumulatedMs);
+    const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
+    const nowMs = Date.now();
+    const recordId = continuingSavedId || ("R-" + nowMs.toString(36).toUpperCase());
+
+    const dateOnly = new Date(nowMs).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    const timeOnly = new Date(nowMs).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+
+    const record = {
+      id: recordId,
+      campaign,
+      miles: totalMiles.toFixed(2),
+      pings: coords.length,
+      duration,
+      date: dateOnly,
+      completedTime: timeOnly,
+      license: document.getElementById("activeLicenseLabel").textContent,
+      coords: coords.slice()
+    };
+
+    const existingIdx = saved.findIndex(item => item.id === recordId);
+    if (existingIdx !== -1) {
+      saved.splice(existingIdx, 1);
+    }
+    saved.unshift(record);
+    localStorage.setItem("cl_saved_routes", JSON.stringify(saved));
+    clearDraftFromStorage();
+
+    isTrackingActive = false;
+    isPaused = false;
+    continuingSavedId = null;
+    refreshStatusMarkerAppearance();
+    syncRouteControlsUI();
+
+    let cloudMsg = "Route stopped (Red dot) & saved (Date + Route only).";
+    try {
+      const { error: shareErr } = await db
+        .from("shared_routes")
+        .upsert([{ id: record.id, record }], { onConflict: "id" });
+      if (shareErr) {
+        cloudMsg = "Saved locally (Supabase note: " + shareErr.message + ").";
+      } else {
+        cloudMsg = "Route stopped (Red dot) & synced to cloud.";
+      }
+    } catch (e) {
+      cloudMsg = "Route stopped (Red dot) & saved.";
+    }
+
+    document.getElementById("livePill").textContent = "STOPPED";
+    document.getElementById("livePill").classList.remove("claimed");
+    document.getElementById("gpsStatusText").textContent = cloudMsg;
+
+    renderSavedRoutes();
+    showProof(record);
+  }
+
+  function renderSavedRoutes() {
+    const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
+    document.getElementById("savedCount").textContent = saved.length;
+    const list = document.getElementById("savedRoutesList");
+    if (!saved.length) {
+      list.innerHTML = `<div style="color:var(--muted); font-size:13px;">No saved routes yet.</div>`;
+      return;
+    }
+    list.innerHTML = saved.map((r, idx) => {
+      const cleanDate = extractDateOnly(r.date);
+      return `
+        <div class="key-item">
+          <div style="cursor:pointer; flex:1;" onclick="selectSavedProof(${idx})">
+            <div class="key-title">${escapeHtml(r.campaign)}</div>
+            <div class="key-meta">${escapeHtml(cleanDate)} • ${r.miles} mi • ${r.duration}</div>
+          </div>
+          <div style="display:flex; gap:6px; align-items:center; flex-shrink:0;">
+            <button type="button" class="btn btn-warning btn-xs" onclick="continueSavedRoute(${idx})">▶ Continue</button>
+            <button type="button" class="btn btn-success btn-xs" onclick="selectSavedProof(${idx})">Proof →</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  function selectSavedProof(idx) {
+    const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
+    if (saved[idx]) {
+      showProof(saved[idx]);
+      switchTab("proofTab", document.querySelector('[data-tab="proofTab"]'));
+    }
+  }
+
+  function buildProofSummaryText(r, includeMetrics = false) {
+    const cleanDate = extractDateOnly(r.date);
+    if (includeMetrics) {
+      const timeStr = r.completedTime || extractTimeOnly(r.date);
+      return `CLEARLINE OPERATIONS — GPS PROOF OF PERFORMANCE
+Campaign: ${r.campaign}
+Date: ${cleanDate}
+Time Completed: ${timeStr}
+Distance Tracked: ${r.miles} miles (${r.pings} GPS pings)
+Active Duration: ${r.duration}
+Status: VERIFIED ROUTE`;
+    }
+    return `CLEARLINE OPERATIONS — VERIFIED VEHICLE ROUTE
+Campaign: ${r.campaign}
+Date: ${cleanDate}
+Route: Verified on map above (Start to End)
+Status: VERIFIED ROUTE`;
+  }
+
+  function downsampleCoords(pts, maxPts = 120) {
+    if (!Array.isArray(pts) || pts.length <= maxPts) return pts || [];
+    const step = (pts.length - 1) / (maxPts - 1);
+    const out = [];
+    for (let i = 0; i < maxPts; i++) {
+      out.push(pts[Math.round(i * step)]);
+    }
+    return out;
+  }
+
+  function encodeProofPayload(r) {
+    try {
+      const compact = {
+        c: r.campaign,
+        m: r.miles,
+        p: r.pings,
+        u: r.duration,
+        t: extractDateOnly(r.date),
+        tm: r.completedTime || extractTimeOnly(r.date),
+        l: r.license,
+        g: downsampleCoords(r.coords, 120).map(pt => [Number(pt[0].toFixed(5)), Number(pt[1].toFixed(5))])
+      };
+      const json = JSON.stringify(compact);
+      return btoa(unescape(encodeURIComponent(json)))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function decodeProofPayload(encoded) {
+    try {
+      let b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+      while (b64.length % 4) b64 += "=";
+      const json = decodeURIComponent(escape(atob(b64)));
+      const compact = JSON.parse(json);
+      return {
+        campaign: compact.c || "Billboard Route",
+        miles: compact.m || "0.00",
+        pings: compact.p || 0,
+        duration: compact.u || "00:00",
+        date: compact.t || "",
+        completedTime: compact.tm || "",
+        license: compact.l || "Licensed Unit",
+        coords: Array.isArray(compact.g) ? compact.g : []
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function buildProofUrl(r, includeMetrics = false) {
+    const baseUrl = PUBLIC_APP_URL;
+    const encoded = encodeProofPayload(r);
+    const metricsParam = includeMetrics ? "&metrics=1" : "";
+    return encoded
+      ? `${baseUrl}?proof=${encodeURIComponent(r.id)}&d=${encoded}${metricsParam}`
+      : `${baseUrl}?proof=${encodeURIComponent(r.id)}${metricsParam}`;
+  }
+
+  function onProofMetricsToggleChange() {
+    if (!activeProofRecord) return;
+    const includeMetrics = document.getElementById("includeMetricsToggle").checked;
+    document.getElementById("proofContent").innerText = buildProofSummaryText(activeProofRecord, includeMetrics);
+    document.getElementById("proofShareUrl").value = buildProofUrl(activeProofRecord, includeMetrics);
+  }
+
+  function showProof(r) {
+    activeProofRecord = r;
+    const includeMetrics = document.getElementById("includeMetricsToggle").checked;
+    document.getElementById("proofOptionsArea").classList.remove("hidden");
+    document.getElementById("proofContent").innerText = buildProofSummaryText(r, includeMetrics);
+    document.getElementById("proofShareUrl").value = buildProofUrl(r, includeMetrics);
+  }
+
+  async function copyProofLink() {
+    if (!activeProofRecord) return;
+    const includeMetrics = document.getElementById("includeMetricsToggle").checked;
+    const url = buildProofUrl(activeProofRecord, includeMetrics);
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(url);
+      showAlert(
+        "proofAlert",
+        includeMetrics
+          ? "Client Proof link copied (with Time, Distance & Duration)!"
+          : "Clean Client Proof link copied (Date & Route Map only — no time)!"
+      );
+    }
+  }
+
+  async function copyProofSummary() {
+    const txt = document.getElementById("proofContent").innerText;
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(txt);
+      showAlert("proofAlert", "Client proof report copied to clipboard!");
+    }
+  }
+
+  async function checkPublicProofMode() {
+    const params = new URLSearchParams(window.location.search);
+    const proofId = (params.get("proof") || "").trim();
+    const embeddedData = (params.get("d") || "").trim();
+    const showMetrics = params.get("metrics") === "1";
+    if (!proofId && !embeddedData) return false;
+
+    document.getElementById("mainApp").classList.add("hidden");
+    document.getElementById("lockScreen").classList.add("hidden");
+    document.getElementById("publicProofView").classList.remove("hidden");
+
+    let rec = null;
+    if (proofId) {
+      try {
+        const { data } = await db
+          .from("shared_routes")
+          .select("record")
+          .eq("id", proofId)
+          .maybeSingle();
+        if (data && data.record) rec = data.record;
+      } catch (e) {}
+    }
+
+    if (!rec && proofId) {
+      const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
+      rec = saved.find(item => String(item.id) === proofId) || null;
+    }
+
+    if (!rec && embeddedData) {
+      rec = decodeProofPayload(embeddedData);
+    }
+
+    const pMap = L.map("proofMap").setView([34.9496, -81.9320], 13);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap"
+    }).addTo(pMap);
+
+    if (!rec) {
+      document.getElementById("publicProofDetails").innerText = "Route proof not found.";
+      return true;
+    }
+
+    activeProofRecord = rec;
+    document.getElementById("publicProofDetails").innerText = buildProofSummaryText(rec, showMetrics);
+
+    const pts = Array.isArray(rec.coords) ? rec.coords : [];
+    if (pts.length > 0) {
+      const line = L.polyline(pts, { color: "#3b82f6", weight: 5 }).addTo(pMap);
+      L.marker(pts[0], { icon: greenStartIcon }).bindPopup("Route Start").addTo(pMap);
+      L.marker(pts[pts.length - 1], { icon: redEndIcon }).bindPopup("Route End").addTo(pMap);
+      if (pts.length > 1) {
+        pMap.fitBounds(line.getBounds(), { padding: [24, 24] });
+      } else {
+        pMap.setView(pts[0], 15);
+      }
+    }
+    return true;
+  }
+
+  async function copyPublicProofSummary() {
+    const txt = document.getElementById("publicProofDetails").innerText;
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(txt);
+      showAlert("publicProofAlert", "Verified route summary copied!");
+    }
+  }
+
+  window.addEventListener("beforeunload", () => {
+    saveDraftToStorage();
+  });
+
+  window.addEventListener("DOMContentLoaded", async () => {
+    const isProof = await checkPublicProofMode();
+    if (isProof) return;
+
+    initMap();
+    restoreDraftOnLoad();
+    renderSavedRoutes();
+    checkAccessOnLoad();
+  });
+</script>
+</body>
+</html>
