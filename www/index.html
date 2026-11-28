@@ -145,9 +145,11 @@
     .toggle-row input[type="checkbox"] {
       width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0;
     }
-    .legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--muted); margin-bottom: 10px; align-items: center; }
-    .dot-green { width: 10px; height: 10px; border-radius: 50%; background: #10b981; display: inline-block; margin-right: 5px; border: 2px solid #fff; }
-    .dot-red { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; display: inline-block; margin-right: 5px; border: 2px solid #fff; }
+    .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-bottom: 10px; align-items: center; }
+    .dot-green { width: 10px; height: 10px; border-radius: 50%; background: #10b981; display: inline-block; margin-right: 4px; border: 2px solid #fff; }
+    .dot-blue { width: 10px; height: 10px; border-radius: 50%; background: #3b82f6; display: inline-block; margin-right: 4px; border: 2px solid #fff; }
+    .dot-yellow { width: 10px; height: 10px; border-radius: 50%; background: #f59e0b; display: inline-block; margin-right: 4px; border: 2px solid #fff; }
+    .dot-red { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; display: inline-block; margin-right: 4px; border: 2px solid #fff; }
   </style>
 </head>
 <body>
@@ -235,7 +237,9 @@
             </div>
             <div class="legend" style="margin-bottom:0;">
               <span><i class="dot-green"></i>Start</span>
-              <span><i class="dot-red"></i>End</span>
+              <span><i class="dot-blue"></i>Live</span>
+              <span><i class="dot-yellow"></i>Paused</span>
+              <span><i class="dot-red"></i>Stop</span>
             </div>
           </div>
           <div id="map"></div>
@@ -291,14 +295,14 @@
     <div id="proofTab" class="tab-panel">
       <div class="card">
         <h2>Client Proof-of-Performance</h2>
-        <p class="desc">By default, the client link shows only the <strong>Date</strong> and <strong>Vehicle Route Map</strong>. Toggle metrics on below if a client also wants time, distance, and duration.</p>
+        <p class="desc">By default, stopping a route outputs only the <strong>Date</strong> and <strong>Route Map</strong> (no clock time, duration, or mileage). Turn on the toggle below anytime you want to include time and distance.</p>
 
         <div id="proofOptionsArea" class="hidden">
           <label class="toggle-row" for="includeMetricsToggle">
             <input type="checkbox" id="includeMetricsToggle" onchange="onProofMetricsToggleChange()" />
             <div>
               <div style="font-size:13px; font-weight:700; color:#f8fafc;">Include Time, Distance &amp; Active Duration</div>
-              <div style="font-size:11.5px; color:var(--muted);">Off = Date &amp; Route Map only • On = Adds miles, duration &amp; pings</div>
+              <div style="font-size:11.5px; color:var(--muted);">Off = Date &amp; Route Map only (no time) • On = Adds time, duration &amp; miles</div>
             </div>
           </label>
 
@@ -671,10 +675,11 @@
   }
 
   // =========================================================
-  // GPS ROUTE TRACKER, PAUSE/RESUME & PERSISTENCE
+  // GPS ROUTE TRACKER, LIVE LOCATE-ME, PAUSE/RESUME & PERSISTENCE
   // =========================================================
-  let map, polyline, startMarker, endMarker, myLocationMarker = null, myAccuracyCircle = null;
-  let watchId = null, bgWatcherId = null, wakeLock = null;
+  let map, polyline, startMarker, statusDotMarker, myAccuracyCircle = null;
+  let watchId = null, bgWatcherId = null, locateWatchId = null, locateBgWatcherId = null, wakeLock = null;
+  let isLiveLocateMode = false, lastKnownLatLng = null;
   let coords = [], totalMiles = 0;
   let segmentStartMs = null, accumulatedMs = 0, timerInt = null;
   let isTrackingActive = false, isPaused = false, continuingSavedId = null;
@@ -690,7 +695,62 @@
   }
 
   const greenStartIcon = createDotIcon("#10b981");
+  const blueLiveIcon = createDotIcon("#3b82f6");
+  const yellowPausedIcon = createDotIcon("#f59e0b");
   const redEndIcon = createDotIcon("#ef4444");
+
+  function getStatusDotStyle() {
+    if (isTrackingActive && isPaused) {
+      return { icon: yellowPausedIcon, color: "#f59e0b", label: "Paused Location" };
+    }
+    if (!isTrackingActive && coords.length > 0 && !isLiveLocateMode) {
+      return { icon: redEndIcon, color: "#ef4444", label: "Stopped / Route End" };
+    }
+    return { icon: blueLiveIcon, color: "#3b82f6", label: "Live Location" };
+  }
+
+  function setStatusMarker(lat, lng, accuracy = null, panMap = false) {
+    lastKnownLatLng = [lat, lng];
+    const style = getStatusDotStyle();
+
+    if (!statusDotMarker) {
+      statusDotMarker = L.marker([lat, lng], { icon: style.icon, zIndexOffset: 1000 })
+        .bindPopup(style.label)
+        .addTo(map);
+    } else {
+      statusDotMarker.setLatLng([lat, lng]);
+      statusDotMarker.setIcon(style.icon);
+      statusDotMarker.setPopupContent(style.label);
+    }
+
+    if (accuracy && (isLiveLocateMode || (isTrackingActive && !isPaused))) {
+      if (myAccuracyCircle) {
+        myAccuracyCircle.setLatLng([lat, lng]).setRadius(accuracy).setStyle({ color: style.color, fillColor: style.color });
+      } else {
+        myAccuracyCircle = L.circle([lat, lng], {
+          radius: accuracy,
+          color: style.color,
+          fillColor: style.color,
+          fillOpacity: 0.15,
+          weight: 1
+        }).addTo(map);
+      }
+    } else if (myAccuracyCircle) {
+      map.removeLayer(myAccuracyCircle);
+      myAccuracyCircle = null;
+    }
+
+    if (panMap || (autoFollow && (isLiveLocateMode || (isTrackingActive && !isPaused)))) {
+      map.setView([lat, lng], Math.max(map.getZoom(), 16));
+    }
+  }
+
+  function refreshStatusMarkerAppearance() {
+    const target = (coords.length > 0) ? coords[coords.length - 1] : lastKnownLatLng;
+    if (target) {
+      setStatusMarker(target[0], target[1], null, false);
+    }
+  }
 
   function initMap() {
     map = L.map("map", { zoomControl: true }).setView([34.9496, -81.9320], 13);
@@ -773,7 +833,7 @@
         coords: coords,
         totalMiles: totalMiles,
         accumulatedMs: getCurrentElapsedMs(),
-        isPaused: true, // Restores safely in PAUSED state so user taps Resume when ready
+        isPaused: true,
         campaign: document.getElementById("routeCampaignInput").value,
         continuingSavedId: continuingSavedId,
         updatedAt: Date.now()
@@ -789,15 +849,15 @@
   function renderCoordsOnMap(fitToRoute = false) {
     polyline.setLatLngs(coords);
     if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
-    if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
 
     if (coords.length > 0) {
       startMarker = L.marker(coords[0], { icon: greenStartIcon }).bindPopup("Start").addTo(map);
-      endMarker = L.marker(coords[coords.length - 1], { icon: redEndIcon }).bindPopup("Current / End").addTo(map);
+      const lastPt = coords[coords.length - 1];
+      setStatusMarker(lastPt[0], lastPt[1], null, false);
       if (fitToRoute && coords.length > 1) {
         map.fitBounds(polyline.getBounds(), { padding: [24, 24] });
       } else {
-        map.setView(coords[coords.length - 1], Math.max(map.getZoom(), 15));
+        map.setView(lastPt, Math.max(map.getZoom(), 15));
       }
     }
   }
@@ -824,7 +884,7 @@
       renderCoordsOnMap(true);
       updateStatsUI();
       syncRouteControlsUI();
-      document.getElementById("gpsStatusText").textContent = "Route paused & saved — Tap Resume to continue";
+      document.getElementById("gpsStatusText").textContent = "Route paused (Yellow dot) — Tap Resume to continue";
     } catch (e) {}
   }
 
@@ -849,97 +909,109 @@
     autoFollow = !autoFollow;
     const btn = document.getElementById("followBtn");
     btn.textContent = autoFollow ? "◎ Follow: ON" : "◎ Follow: OFF";
-    if (autoFollow && coords.length > 0) {
-      map.setView(coords[coords.length - 1], map.getZoom());
+    if (autoFollow) {
+      const target = (coords.length > 0) ? coords[coords.length - 1] : lastKnownLatLng;
+      if (target) map.setView(target, map.getZoom());
     }
   }
 
   function recenterMap() {
     autoFollow = true;
     document.getElementById("followBtn").textContent = "◎ Follow: ON";
-    if (coords.length > 0) {
-      map.setView(coords[coords.length - 1], Math.max(map.getZoom(), 15));
-    } else if (myLocationMarker) {
-      map.setView(myLocationMarker.getLatLng(), Math.max(map.getZoom(), 16));
+    const target = (coords.length > 0) ? coords[coords.length - 1] : lastKnownLatLng;
+    if (target) {
+      map.setView(target, Math.max(map.getZoom(), 16));
     }
+  }
+
+  async function stopLocateOnlyWatcher() {
+    isLiveLocateMode = false;
+    if (locateWatchId !== null) {
+      navigator.geolocation.clearWatch(locateWatchId);
+      locateWatchId = null;
+    }
+    const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
+    if (capBg && locateBgWatcherId) {
+      try { await capBg.removeWatcher({ id: locateBgWatcherId }); } catch (e) {}
+      locateBgWatcherId = null;
+    }
+    const btn = document.getElementById("locateMeBtn");
+    btn.textContent = "📍 Locate Me Now";
+    btn.className = "btn btn-primary btn-sm";
   }
 
   async function locateMeNow() {
     const btn = document.getElementById("locateMeBtn");
     const statusEl = document.getElementById("gpsStatusText");
-    btn.disabled = true;
-    btn.textContent = "📍 Locating...";
 
-    const showCurrentLocation = (lat, lng, accuracy) => {
-      map.flyTo([lat, lng], 17, { animate: true, duration: 1.0 });
+    if (isTrackingActive && !isPaused) {
+      autoFollow = true;
+      document.getElementById("followBtn").textContent = "◎ Follow: ON";
+      if (lastKnownLatLng) map.flyTo(lastKnownLatLng, 17, { animate: true, duration: 0.8 });
+      return;
+    }
 
-      if (myLocationMarker) {
-        myLocationMarker.setLatLng([lat, lng]);
-      } else {
-        myLocationMarker = L.circleMarker([lat, lng], {
-          radius: 8,
-          fillColor: "#3b82f6",
-          color: "#ffffff",
-          weight: 3,
-          opacity: 1,
-          fillOpacity: 1
-        }).addTo(map).bindPopup("Current Location");
-      }
-
-      if (accuracy) {
-        if (myAccuracyCircle) {
-          myAccuracyCircle.setLatLng([lat, lng]).setRadius(accuracy);
-        } else {
-          myAccuracyCircle = L.circle([lat, lng], {
-            radius: accuracy,
-            color: "#3b82f6",
-            fillColor: "#3b82f6",
-            fillOpacity: 0.15,
-            weight: 1
-          }).addTo(map);
-        }
-      }
-
+    if (isLiveLocateMode) {
+      await stopLocateOnlyWatcher();
+      refreshStatusMarkerAppearance();
       if (!isTrackingActive) {
-        statusEl.textContent = `Located (${lat.toFixed(5)}, ${lng.toFixed(5)}) — Ready`;
+        statusEl.textContent = "Live locate stopped — Tap Start Route or Locate Me Now";
       }
-      btn.disabled = false;
-      btn.textContent = "📍 Locate Me Now";
+      return;
+    }
+
+    isLiveLocateMode = true;
+    autoFollow = true;
+    document.getElementById("followBtn").textContent = "◎ Follow: ON";
+    btn.textContent = "🔵 Live Locating...";
+    btn.className = "btn btn-success btn-sm";
+    statusEl.textContent = "Live blue dot following you — Tap Start Route or Resume when ready";
+
+    const onLocateUpdate = (lat, lng, accuracy, isFirstFix = false) => {
+      if (!isLiveLocateMode) return;
+      setStatusMarker(lat, lng, accuracy, isFirstFix);
+      if (!isTrackingActive) {
+        statusEl.textContent = `Following live (${lat.toFixed(5)}, ${lng.toFixed(5)}) — Ready`;
+      }
     };
 
     try {
       const capGeo = window.Capacitor?.Plugins?.Geolocation;
       if (capGeo) {
         await capGeo.requestPermissions();
-        const pos = await capGeo.getCurrentPosition({
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0
+        const firstPos = await capGeo.getCurrentPosition({ enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+        onLocateUpdate(firstPos.coords.latitude, firstPos.coords.longitude, firstPos.coords.accuracy, true);
+      } else if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          pos => onLocateUpdate(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, true),
+          () => {},
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+      }
+
+      const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
+      if (capBg) {
+        locateBgWatcherId = await capBg.addWatcher({
+          backgroundMessage: "ClearLine Operations — Live GPS position active",
+          backgroundTitle: "ClearLine Live Locate",
+          requestPermissions: true,
+          stale: false,
+          distanceFilter: 3
+        }, (location, error) => {
+          if (!error && location) {
+            onLocateUpdate(location.latitude, location.longitude, location.accuracy, false);
+          }
         });
-        showCurrentLocation(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
-        return;
+      } else if (navigator.geolocation) {
+        locateWatchId = navigator.geolocation.watchPosition(
+          pos => onLocateUpdate(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, false),
+          err => { statusEl.textContent = "GPS Warning: " + err.message; },
+          { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+        );
       }
-
-      if (!navigator.geolocation) {
-        alert("Geolocation is not supported on this device.");
-        btn.disabled = false;
-        btn.textContent = "📍 Locate Me Now";
-        return;
-      }
-
-      navigator.geolocation.getCurrentPosition(
-        pos => showCurrentLocation(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy),
-        err => {
-          alert("Could not get current location: " + err.message);
-          btn.disabled = false;
-          btn.textContent = "📍 Locate Me Now";
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-      );
     } catch (err) {
+      await stopLocateOnlyWatcher();
       alert("Location error: " + (err.message || err));
-      btn.disabled = false;
-      btn.textContent = "📍 Locate Me Now";
     }
   }
 
@@ -964,457 +1036,4 @@
     const R = 3958.8;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
-
-  function handleGpsPoint(latitude, longitude) {
-    if (isPaused) return;
-    if (coords.length > 0) {
-      const prev = coords[coords.length - 1];
-      totalMiles += haversineMiles(prev[0], prev[1], latitude, longitude);
-    }
-    coords.push([latitude, longitude]);
-    polyline.setLatLngs(coords);
-
-    if (!startMarker) {
-      startMarker = L.marker([latitude, longitude], { icon: greenStartIcon }).bindPopup("Start").addTo(map);
-    }
-    if (!endMarker) {
-      endMarker = L.marker([latitude, longitude], { icon: redEndIcon }).bindPopup("Current / End").addTo(map);
-    } else {
-      endMarker.setLatLng([latitude, longitude]);
-    }
-
-    if (autoFollow) {
-      map.setView([latitude, longitude], Math.max(map.getZoom(), 15));
-    }
-
-    updateStatsUI();
-    saveDraftToStorage();
-  }
-
-  async function beginLiveWatchers() {
-    const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
-    if (!capBg && !navigator.geolocation) {
-      alert("GPS is not supported on this browser.");
-      return false;
-    }
-
-    isTrackingActive = true;
-    isPaused = false;
-    segmentStartMs = Date.now();
-    autoFollow = true;
-    document.getElementById("followBtn").textContent = "◎ Follow: ON";
-    document.getElementById("gpsStatusText").textContent = capBg
-      ? "Recording route (Background GPS active)..."
-      : "Recording live street route...";
-
-    syncRouteControlsUI();
-    saveDraftToStorage();
-    await requestWakeLock();
-
-    clearInterval(timerInt);
-    timerInt = setInterval(() => {
-      updateStatsUI();
-    }, 1000);
-
-    if (capBg) {
-      bgWatcherId = await capBg.addWatcher({
-        backgroundMessage: "ClearLine Operations — Tracking billboard route",
-        backgroundTitle: "ClearLine GPS Active",
-        requestPermissions: true,
-        stale: false,
-        distanceFilter: 5
-      }, (location, error) => {
-        if (error) {
-          document.getElementById("gpsStatusText").textContent = "GPS Warning: " + error.message;
-          return;
-        }
-        if (location) handleGpsPoint(location.latitude, location.longitude);
-      });
-    } else {
-      watchId = navigator.geolocation.watchPosition(pos => {
-        handleGpsPoint(pos.coords.latitude, pos.coords.longitude);
-      }, err => {
-        document.getElementById("gpsStatusText").textContent = "GPS Warning: " + err.message;
-      }, { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 });
-    }
-    return true;
-  }
-
-  async function stopLiveWatchers() {
-    if (watchId !== null) {
-      navigator.geolocation.clearWatch(watchId);
-      watchId = null;
-    }
-    const capBg = window.Capacitor?.Plugins?.BackgroundGeolocation;
-    if (capBg && bgWatcherId) {
-      try { await capBg.removeWatcher({ id: bgWatcherId }); } catch (e) {}
-      bgWatcherId = null;
-    }
-    clearInterval(timerInt);
-    timerInt = null;
-    await releaseWakeLock();
-  }
-
-  async function startTracking() {
-    coords = [];
-    totalMiles = 0;
-    accumulatedMs = 0;
-    segmentStartMs = null;
-    continuingSavedId = null;
-    polyline.setLatLngs([]);
-    if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
-    if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
-
-    updateStatsUI();
-    await beginLiveWatchers();
-  }
-
-  async function togglePauseRoute() {
-    if (!isTrackingActive) return;
-
-    if (!isPaused) {
-      // PAUSE ROUTE
-      if (segmentStartMs !== null) {
-        accumulatedMs += (Date.now() - segmentStartMs);
-        segmentStartMs = null;
-      }
-      isPaused = true;
-      await stopLiveWatchers();
-      updateStatsUI();
-      syncRouteControlsUI();
-      saveDraftToStorage();
-      document.getElementById("gpsStatusText").textContent = "Route paused — Safe to close app & resume anytime";
-    } else {
-      // RESUME ROUTE
-      await beginLiveWatchers();
-    }
-  }
-
-  async function continueSavedRoute(idx) {
-    const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
-    const rec = saved[idx];
-    if (!rec) return;
-
-    if (isTrackingActive && !isPaused) {
-      alert("Pause or stop your current active route first.");
-      return;
-    }
-
-    await stopLiveWatchers();
-    coords = Array.isArray(rec.coords) ? rec.coords.map(pt => [pt[0], pt[1]]) : [];
-    totalMiles = parseFloat(rec.miles) || 0;
-    accumulatedMs = parseDurationToMs(rec.duration);
-    segmentStartMs = null;
-    isTrackingActive = true;
-    isPaused = true;
-    continuingSavedId = rec.id;
-
-    document.getElementById("routeCampaignInput").value = rec.campaign || "";
-    switchTab("gpsTab", document.querySelector('[data-tab="gpsTab"]'));
-
-    setTimeout(() => {
-      map.invalidateSize();
-      renderCoordsOnMap(true);
-      updateStatsUI();
-      syncRouteControlsUI();
-      saveDraftToStorage();
-      document.getElementById("gpsStatusText").textContent = `Loaded "${rec.campaign}" — Tap Resume to continue tracking`;
-    }, 150);
-  }
-
-  async function stopAndSaveRoute() {
-    if (!isPaused && segmentStartMs !== null) {
-      accumulatedMs += (Date.now() - segmentStartMs);
-      segmentStartMs = null;
-    }
-    await stopLiveWatchers();
-
-    const campaign = document.getElementById("routeCampaignInput").value.trim() || "Billboard Route";
-    const duration = formatDurationMs(accumulatedMs);
-    const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
-    const nowMs = Date.now();
-    const recordId = continuingSavedId || ("R-" + nowMs.toString(36).toUpperCase());
-
-    const record = {
-      id: recordId,
-      campaign,
-      miles: totalMiles.toFixed(2),
-      pings: coords.length,
-      duration,
-      date: new Date(nowMs).toLocaleString(),
-      license: document.getElementById("activeLicenseLabel").textContent,
-      coords: coords.slice()
-    };
-
-    const existingIdx = saved.findIndex(item => item.id === recordId);
-    if (existingIdx !== -1) {
-      saved.splice(existingIdx, 1);
-    }
-    saved.unshift(record);
-    localStorage.setItem("cl_saved_routes", JSON.stringify(saved));
-    clearDraftFromStorage();
-
-    isTrackingActive = false;
-    isPaused = false;
-    continuingSavedId = null;
-    syncRouteControlsUI();
-
-    let cloudMsg = "Route saved with shareable map proof link.";
-    try {
-      const { error: shareErr } = await db
-        .from("shared_routes")
-        .upsert([{ id: record.id, record }], { onConflict: "id" });
-      if (shareErr) {
-        cloudMsg = "Saved locally (Supabase note: " + shareErr.message + ").";
-      } else {
-        cloudMsg = "Route synced to cloud & shareable proof link ready.";
-      }
-    } catch (e) {
-      cloudMsg = "Route saved with embedded URL proof link.";
-    }
-
-    document.getElementById("livePill").textContent = "SAVED";
-    document.getElementById("livePill").classList.remove("claimed");
-    document.getElementById("gpsStatusText").textContent = cloudMsg;
-
-    renderSavedRoutes();
-    showProof(record);
-  }
-
-  function renderSavedRoutes() {
-    const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
-    document.getElementById("savedCount").textContent = saved.length;
-    const list = document.getElementById("savedRoutesList");
-    if (!saved.length) {
-      list.innerHTML = `<div style="color:var(--muted); font-size:13px;">No saved routes yet.</div>`;
-      return;
-    }
-    list.innerHTML = saved.map((r, idx) => `
-      <div class="key-item">
-        <div style="cursor:pointer; flex:1;" onclick="selectSavedProof(${idx})">
-          <div class="key-title">${escapeHtml(r.campaign)}</div>
-          <div class="key-meta">${r.miles} mi • ${r.duration} • ${r.pings} GPS pings • ${escapeHtml(r.date)}</div>
-        </div>
-        <div style="display:flex; gap:6px; align-items:center; flex-shrink:0;">
-          <button type="button" class="btn btn-warning btn-xs" onclick="continueSavedRoute(${idx})">▶ Continue</button>
-          <button type="button" class="btn btn-success btn-xs" onclick="selectSavedProof(${idx})">Proof →</button>
-        </div>
-      </div>
-    `).join("");
-  }
-
-  function selectSavedProof(idx) {
-    const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
-    if (saved[idx]) {
-      showProof(saved[idx]);
-      switchTab("proofTab", document.querySelector('[data-tab="proofTab"]'));
-    }
-  }
-
-  // =========================================================
-  // CLIENT PROOF SUMMARY & LINK (CLEAN BY DEFAULT + METRICS TOGGLE)
-  // =========================================================
-  function buildProofSummaryText(r, includeMetrics = false) {
-    if (includeMetrics) {
-      return `CLEARLINE OPERATIONS — GPS PROOF OF PERFORMANCE
-Campaign: ${r.campaign}
-Date: ${r.date}
-Distance Tracked: ${r.miles} miles (${r.pings} GPS pings)
-Active Duration: ${r.duration}
-Status: VERIFIED ROUTE`;
-    }
-    return `CLEARLINE OPERATIONS — VERIFIED VEHICLE ROUTE
-Campaign: ${r.campaign}
-Date: ${r.date}
-Route Path: Verified on map above (Start to End)
-Status: VERIFIED ROUTE`;
-  }
-
-  function downsampleCoords(pts, maxPts = 120) {
-    if (!Array.isArray(pts) || pts.length <= maxPts) return pts || [];
-    const step = (pts.length - 1) / (maxPts - 1);
-    const out = [];
-    for (let i = 0; i < maxPts; i++) {
-      out.push(pts[Math.round(i * step)]);
-    }
-    return out;
-  }
-
-  function encodeProofPayload(r) {
-    try {
-      const compact = {
-        c: r.campaign,
-        m: r.miles,
-        p: r.pings,
-        u: r.duration,
-        t: r.date,
-        l: r.license,
-        g: downsampleCoords(r.coords, 120).map(pt => [Number(pt[0].toFixed(5)), Number(pt[1].toFixed(5))])
-      };
-      const json = JSON.stringify(compact);
-      return btoa(unescape(encodeURIComponent(json)))
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=+$/, "");
-    } catch (e) {
-      return "";
-    }
-  }
-
-  function decodeProofPayload(encoded) {
-    try {
-      let b64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
-      while (b64.length % 4) b64 += "=";
-      const json = decodeURIComponent(escape(atob(b64)));
-      const compact = JSON.parse(json);
-      return {
-        campaign: compact.c || "Billboard Route",
-        miles: compact.m || "0.00",
-        pings: compact.p || 0,
-        duration: compact.u || "00:00",
-        date: compact.t || "",
-        license: compact.l || "Licensed Unit",
-        coords: Array.isArray(compact.g) ? compact.g : []
-      };
-    } catch (e) {
-      return null;
-    }
-  }
-
-  function buildProofUrl(r, includeMetrics = false) {
-    const baseUrl = PUBLIC_APP_URL;
-    const encoded = encodeProofPayload(r);
-    const metricsParam = includeMetrics ? "&metrics=1" : "";
-    return encoded
-      ? `${baseUrl}?proof=${encodeURIComponent(r.id)}&d=${encoded}${metricsParam}`
-      : `${baseUrl}?proof=${encodeURIComponent(r.id)}${metricsParam}`;
-  }
-
-  function onProofMetricsToggleChange() {
-    if (!activeProofRecord) return;
-    const includeMetrics = document.getElementById("includeMetricsToggle").checked;
-    document.getElementById("proofContent").innerText = buildProofSummaryText(activeProofRecord, includeMetrics);
-    document.getElementById("proofShareUrl").value = buildProofUrl(activeProofRecord, includeMetrics);
-  }
-
-  function showProof(r) {
-    activeProofRecord = r;
-    const includeMetrics = document.getElementById("includeMetricsToggle").checked;
-    document.getElementById("proofOptionsArea").classList.remove("hidden");
-    document.getElementById("proofContent").innerText = buildProofSummaryText(r, includeMetrics);
-    document.getElementById("proofShareUrl").value = buildProofUrl(r, includeMetrics);
-  }
-
-  async function copyProofLink() {
-    if (!activeProofRecord) return;
-    const includeMetrics = document.getElementById("includeMetricsToggle").checked;
-    const url = buildProofUrl(activeProofRecord, includeMetrics);
-    if (navigator.clipboard) {
-      await navigator.clipboard.writeText(url);
-      showAlert(
-        "proofAlert",
-        includeMetrics
-          ? "Client Proof link copied (with Time, Distance & Duration)!"
-          : "Clean Client Proof link copied (Date & Route Map only)!"
-      );
-    }
-  }
-
-  async function copyProofSummary() {
-    const txt = document.getElementById("proofContent").innerText;
-    if (navigator.clipboard) {
-      await navigator.clipboard.writeText(txt);
-      showAlert("proofAlert", "Client proof report copied to clipboard!");
-    }
-  }
-
-  // =========================================================
-  // PUBLIC READ-ONLY CLIENT PROOF MAP VIEW (?proof=...)
-  // =========================================================
-  async function checkPublicProofMode() {
-    const params = new URLSearchParams(window.location.search);
-    const proofId = (params.get("proof") || "").trim();
-    const embeddedData = (params.get("d") || "").trim();
-    const showMetrics = params.get("metrics") === "1";
-    if (!proofId && !embeddedData) return false;
-
-    document.getElementById("mainApp").classList.add("hidden");
-    document.getElementById("lockScreen").classList.add("hidden");
-    document.getElementById("publicProofView").classList.remove("hidden");
-
-    let rec = null;
-    if (proofId) {
-      try {
-        const { data } = await db
-          .from("shared_routes")
-          .select("record")
-          .eq("id", proofId)
-          .maybeSingle();
-        if (data && data.record) rec = data.record;
-      } catch (e) {}
-    }
-
-    if (!rec && proofId) {
-      const saved = JSON.parse(localStorage.getItem("cl_saved_routes") || "[]");
-      rec = saved.find(item => String(item.id) === proofId) || null;
-    }
-
-    if (!rec && embeddedData) {
-      rec = decodeProofPayload(embeddedData);
-    }
-
-    const pMap = L.map("proofMap").setView([34.9496, -81.9320], 13);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: "&copy; OpenStreetMap"
-    }).addTo(pMap);
-
-    if (!rec) {
-      document.getElementById("publicProofDetails").innerText = "Route proof not found.";
-      return true;
-    }
-
-    activeProofRecord = rec;
-    document.getElementById("publicProofDetails").innerText = buildProofSummaryText(rec, showMetrics);
-
-    const pts = Array.isArray(rec.coords) ? rec.coords : [];
-    if (pts.length > 0) {
-      const line = L.polyline(pts, { color: "#3b82f6", weight: 5 }).addTo(pMap);
-      L.marker(pts[0], { icon: greenStartIcon }).bindPopup("Route Start").addTo(pMap);
-      L.marker(pts[pts.length - 1], { icon: redEndIcon }).bindPopup("Route End").addTo(pMap);
-      if (pts.length > 1) {
-        pMap.fitBounds(line.getBounds(), { padding: [24, 24] });
-      } else {
-        pMap.setView(pts[0], 15);
-      }
-    }
-    return true;
-  }
-
-  async function copyPublicProofSummary() {
-    const txt = document.getElementById("publicProofDetails").innerText;
-    if (navigator.clipboard) {
-      await navigator.clipboard.writeText(txt);
-      showAlert("publicProofAlert", "Verified route summary copied!");
-    }
-  }
-
-  window.addEventListener("beforeunload", () => {
-    saveDraftToStorage();
-  });
-
-  window.addEventListener("DOMContentLoaded", async () => {
-    const isProof = await checkPublicProofMode();
-    if (isProof) return;
-
-    initMap();
-    restoreDraftOnLoad();
-    renderSavedRoutes();
-    checkAccessOnLoad();
-  });
-</script>
-</body>
-</html>
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(d
